@@ -88,19 +88,19 @@ def login():
     return jsonify({"error": "Invalid credentials", "success": False}), 401
 
 # Optional: Protected route example to verify JWT and user identity
-@app.route('/api/protected', methods=['GET'])
-@jwt_required()
-def protected():
-    current_user_email = get_jwt_identity()
-    user = users.find_one({'email': current_user_email})
-    if user:
-        return jsonify({
-            "message": "Access granted",
-            "email": current_user_email,
-            "role": user['userType'],
-            "name": user['fullName']
-        }), 200
-    return jsonify({"error": "User not found"}), 404
+# @app.route('/api/protected', methods=['GET'])
+# @jwt_required()
+# def protected():
+#     current_user_email = get_jwt_identity()
+#     user = users.find_one({'email': current_user_email})
+#     if user:
+#         return jsonify({
+#             "message": "Access granted",
+#             "email": current_user_email,
+#             "role": user['userType'],
+#             "name": user['fullName']
+#         }), 200
+#     return jsonify({"error": "User not found"}), 404
 
 if __name__ == '__main__':
     app.run(debug=True)
