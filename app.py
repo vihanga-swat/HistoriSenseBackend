@@ -8,7 +8,7 @@ from datetime import timedelta, datetime
 import secrets
 import os
 from werkzeug.utils import secure_filename
-from langchain.document_loaders import PyPDFLoader
+from langchain_community.document_loaders import PyPDFLoader
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain.prompts import PromptTemplate
 from langchain.chains import LLMChain
@@ -290,18 +290,21 @@ def extract_testimony_details(pdf_path):
     people_prompt_template = PromptTemplate(
         input_variables=["text"],
         template="""
-        You are an expert in analyzing war testimonies. Identify all people mentioned in the text, along with their roles (e.g., soldier, commander, civilian) and regions (e.g., country, city, or battlefield location) where they are associated. Ensure high accuracy by relying on explicit mentions and strong contextual evidence. If a role or region is unclear, mark it as "Unspecified". Ignore generic references (e.g., "the soldiers") and focus on named individuals. If a name appears multiple times, only list it once with the most relevant role and region.
+        You are an expert in analyzing war testimonies. Identify all people mentioned in the text, along with their roles (e.g., soldier, commander, civilian) and regions (e.g., country, city, or battlefield location) where they are associated. Ensure high accuracy by relying on explicit mentions and strong contextual evidence. If a role or region is unclear, mark it as "Unspecified". Ignore generic references (e.g., "the soldiers") and focus on named individuals or specific roles (like "the commander"). If a name appears multiple times, only list it once with the most relevant role and region. don't mention peoples in the references or notes section and don't mention again the owner's name of the testimony.
 
         Text: {text}
 
-        Return the result in this format:
-        - Name: [value], Role: [value], Region: [value]
+        Return the result in EXACTLY this format for EACH person (one person per line):
+        - Name: [person name], Role: [person role], Region: [person region]
+        must Do not deviate from this format. Do not add extra text or explanations.
         """
     )
 
     # Create and run the LLM chain for people mentioned
     people_chain = LLMChain(llm=llm, prompt=people_prompt_template)
     people_result = people_chain.run(text=full_text)
+
+    print("people_result:", people_result)
 
     return writer_result, people_result
 
@@ -322,36 +325,53 @@ def parse_people_info(people_info):
     lines = people_info.strip().split('\n')
 
     for line in lines:
-        # Look for lines that contain information about a person
         if line.strip().startswith('-'):
-            # Try different regex patterns to handle variations in format
-            name_match = re.search(r'Name:\s*\[(.*?)\]|Name:\s*(.*?)(?:,|$)', line)
-            role_match = re.search(r'Role:\s*\[(.*?)\]|Role:\s*(.*?)(?:,|$)', line)
-            region_match = re.search(r'Region:\s*\[(.*?)\]|Region:\s*(.*?)(?:,|$)', line)
+            # Remove the leading dash
+            line = line.strip()[1:].strip()
 
-            name = None
-            if name_match:
-                # Get the first non-None group
-                name = next((g for g in name_match.groups() if g is not None), None)
+            # Initialize person data
+            person = {
+                "name": "Unspecified",
+                "role": "Unspecified",
+                "region": "Unspecified"
+            }
 
-            if name:  # Only add if we found a name
-                role = next((g for g in role_match.groups() if g is not None), "Unspecified") if role_match else "Unspecified"
-                region = next((g for g in region_match.groups() if g is not None), "Unspecified") if region_match else "Unspecified"
+            # Extract name (everything before "Role:")
+            if "Role:" in line:
+                name = line.split("Role:")[0].strip()
+                # Remove any trailing comma
+                if name.endswith(','):
+                    name = name[:-1].strip()
+                person["name"] = name
+            else:
+                # If no "Role:" marker, just use the whole line as name
+                person["name"] = line
 
-                person = {
-                    "name": name.strip(),
-                    "role": role.strip(),
-                    "region": region.strip()
-                }
+            # Extract role
+            if "Role:" in line:
+                role_part = line.split("Role:")[1]
+                if "Region:" in role_part:
+                    role = role_part.split("Region:")[0].strip()
+                    # Remove any trailing comma
+                    if role.endswith(','):
+                        role = role[:-1].strip()
+                    person["role"] = role
+                else:
+                    person["role"] = role_part.strip()
+
+            # Extract region
+            if "Region:" in line:
+                region = line.split("Region:")[1].strip()
+                person["region"] = region
+
+            # Add to the list if we have a name
+            if person["name"] and person["name"] != "Unspecified":
                 people_data.append(person)
 
-    # If no people were found with the above method, try a simpler approach
-    if not people_data and people_info.strip():
-        # Just extract any lines that look like they contain person information
-        for line in lines:
-            if line.strip() and not line.strip().startswith('#') and ':' in line:
-                person = {"description": line.strip()}
-                people_data.append(person)
+    # Debug logging
+    print(f"Extracted {len(people_data)} people from the testimony")
+    for person in people_data:
+        print(f"Person: {person}")
 
     return people_data
 

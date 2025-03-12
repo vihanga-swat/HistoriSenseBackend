@@ -3,3 +3,8 @@ flask-cors
 flask-jwt-extended
 pymongo
 bcrypt
+langchain
+pypdf
+google-generativeai
+langchain-google-genai
+langchain-community
