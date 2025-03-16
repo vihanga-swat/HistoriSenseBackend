@@ -8,8 +8,13 @@ from datetime import timedelta, datetime
 import secrets
 import os
 from werkzeug.utils import secure_filename
-from langchain_community.document_loaders import PyPDFLoader
+from dotenv import load_dotenv
+from langchain_openai import ChatOpenAI
 from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_openai import OpenAIEmbeddings
+from langchain_community.vectorstores import FAISS
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_community.document_loaders import PyPDFLoader, Docx2txtLoader, TextLoader
 from langchain.prompts import PromptTemplate
 from langchain.chains import LLMChain
 
@@ -26,19 +31,35 @@ jwt = JWTManager(app)
 client = MongoClient('localhost', 27017)
 db = client['HistoriSense']
 users = db.users
+museum_testimonies = db.museum_testimonies
 
 # File upload configuration
 UPLOAD_FOLDER = 'uploads'
-ALLOWED_EXTENSIONS = {'pdf'}
+ALLOWED_EXTENSIONS = {'pdf', 'docx', 'txt'}
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
-app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max upload size
+app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024
+MAX_MUSEUM_UPLOADS = 5
 
 # Create uploads directory if it doesn't exist
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-# Google Gemini API setup
-GOOGLE_API_KEY = "AIzaSyBzYZ17YOlHDBYnOLFatNinb7GujbAgCYc"  # Replace with your actual API key
-llm = ChatGoogleGenerativeAI(model="gemini-2.0-flash", google_api_key=GOOGLE_API_KEY, temperature=0.2)
+# Load environment variables
+load_dotenv()
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
+
+# Initialize Dual LLMs and Embeddings
+openai_llm = ChatOpenAI(
+    model_name="gpt-3.5-turbo",
+    temperature=0.5,
+    openai_api_key=OPENAI_API_KEY
+)
+google_llm = ChatGoogleGenerativeAI(
+    model="gemini-2.0-flash",
+    google_api_key=GOOGLE_API_KEY,
+    temperature=0.5
+)
+embeddings = OpenAIEmbeddings(openai_api_key=OPENAI_API_KEY)
 
 # Helper functions
 def validate_email(email):
@@ -127,67 +148,109 @@ def login():
 #         }), 200
 #     return jsonify({"error": "User not found"}), 404
 
+# New analysis functions
+def process_document(file_path):
+    """Loads a document, extracts text, and splits it into chunks."""
+    if file_path.endswith(".pdf"):
+        loader = PyPDFLoader(file_path)
+    elif file_path.endswith(".docx"):
+        loader = Docx2txtLoader(file_path)
+    elif file_path.endswith(".txt"):
+        loader = TextLoader(file_path)
+    else:
+        raise ValueError("Unsupported file format")
+
+    documents = loader.load()
+    full_text = "\n".join([doc.page_content for doc in documents])
+    text_splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
+    chunks = text_splitter.split_documents(documents)
+    vector_db = FAISS.from_documents(chunks, embeddings)
+    return full_text, vector_db
+
+def retrieve_relevant_chunks(vector_db, query, k=3):
+    """Retrieves the top k relevant document chunks for a given query."""
+    retriever = vector_db.as_retriever(search_kwargs={"k": k})
+    relevant_docs = retriever.get_relevant_documents(query)
+    return "\n".join([doc.page_content for doc in relevant_docs])
+
 # New route for testimony analysis without database storage
 @app.route('/api/analyze-testimony', methods=['POST'])
 @jwt_required()
 def analyze_testimony():
     current_user_email = get_jwt_identity()
+    user = users.find_one({'email': current_user_email})
+    user_type = user['userType']
 
-    # Check if the post request has the file part
-    if 'file' not in request.files:
-        return jsonify({"error": "No file part"}), 400
+    if 'files' not in request.files:
+        return jsonify({"error": "No files part"}), 400
 
-    file = request.files['file']
+    files = request.files.getlist('files')
+    
+    if not files or all(f.filename == '' for f in files):
+        return jsonify({"error": "No selected files"}), 400
 
-    # If user does not select file, browser also submits an empty part without filename
-    if file.filename == '':
-        return jsonify({"error": "No selected file"}), 400
+    if user_type == 'museum' and len(files) > MAX_MUSEUM_UPLOADS:
+        return jsonify({"error": f"Maximum {MAX_MUSEUM_UPLOADS} files allowed for museum users"}), 400
+    elif user_type == 'individual' and len(files) > 1:
+        return jsonify({"error": "Individual users can only upload one file at a time"}), 400
 
-    if file and allowed_file(file.filename):
-        filename = secure_filename(file.filename)
-        file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-        file.save(file_path)
+    analysis_results = []
+    files_to_remove = []
 
-        try:
-            # Process the uploaded PDF
-            writer_info, people_info = extract_testimony_details(file_path)
+    try:
+        for file in files:
+            if file and allowed_file(file.filename):
+                filename = secure_filename(file.filename)
+                file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+                file.save(file_path)
+                files_to_remove.append(file_path)
 
-            # Parse writer info into structured data
-            writer_data = parse_writer_info(writer_info)
-            people_data = parse_people_info(people_info)
+                # Process and analyze the file
+                writer_info, people_info = extract_testimony_details(file_path)
+                writer_data = parse_writer_info(writer_info)
+                people_data = parse_people_info(people_info)
 
-            # Log the parsed data
-            app.logger.info(f"Parsed writer data: {writer_data}")
-            app.logger.info(f"Parsed people data: {people_data}")
+                analysis_result = {
+                    "filename": filename,
+                    "title": request.form.get(f'title_{filename}', filename),  # Get title from form data
+                    "description": request.form.get(f'description_{filename}', ''),
+                    "writer_info": writer_data,
+                    "people_mentioned": people_data,
+                    "upload_date": datetime.now().isoformat(),
+                    "user_email": current_user_email,
+                    "file_type": '.' + filename.rsplit('.', 1)[1].lower()  # Store file type
+                }
 
-            # Store analysis results in session instead of database
-            analysis_result = {
-                "filename": filename,
-                "writer_info": writer_data,
-                "people_mentioned": people_data,
-                "analysis_date": datetime.now().isoformat()
-            }
+                if user_type == 'museum':
+                    # Store in MongoDB for museum users
+                    museum_testimonies.insert_one(analysis_result)
+                else:
+                    # Store in session for individual users
+                    analysis_results.append(analysis_result)
 
-            # Clean up the file after processing
+        # Clean up temporary files
+        for file_path in files_to_remove:
             try:
                 os.remove(file_path)
             except Exception as e:
                 app.logger.warning(f"Could not remove temporary file: {str(e)}")
 
+        if user_type == 'museum':
+            return jsonify({"message": "Testimonies analyzed and stored successfully"}), 200
+        else:
             return jsonify({
                 "message": "Testimony analyzed successfully",
-                "analysis": analysis_result
+                "analysis": analysis_results[0]  # Only one file for individual
             }), 200
 
-        except Exception as e:
-            # Clean up on error
+    except Exception as e:
+        # Clean up on error
+        for file_path in files_to_remove:
             try:
                 os.remove(file_path)
             except:
                 pass
-            return jsonify({"error": f"Error processing testimony: {str(e)}"}), 500
-
-    return jsonify({"error": "File type not allowed"}), 400
+        return jsonify({"error": f"Error processing testimonies: {str(e)}"}), 500
 
 # New routes for testimony analysis
 # @app.route('/api/upload-testimony', methods=['POST'])
@@ -249,11 +312,71 @@ def analyze_testimony():
 
 #     return jsonify({"error": "File type not allowed"}), 400
 
-def extract_testimony_details(pdf_path):
-    # Load and extract text from the PDF
-    loader = PyPDFLoader(pdf_path)
-    documents = loader.load()
-    full_text = "\n".join([doc.page_content for doc in documents])
+# New route to get museum testimonies list
+@app.route('/api/museum-testimonies', methods=['GET'])
+@jwt_required()
+def get_museum_testimonies():
+    current_user_email = get_jwt_identity()
+    user = users.find_one({'email': current_user_email})
+    
+    if user['userType'] != 'museum':
+        return jsonify({"error": "Unauthorized access"}), 403
+
+    testimonies = list(museum_testimonies.find(
+        {'user_email': current_user_email},
+        {'_id': 0, 'filename': 1, 'title': 1, 'upload_date': 1, 'file_type': 1}
+    ))
+    
+    # Add file_type based on filename extension
+    for testimony in testimonies:
+        testimony['file_type'] = '.' + testimony['filename'].rsplit('.', 1)[1].lower()
+    
+    return jsonify({"testimonies": testimonies}), 200
+
+# New route to get specific testimony details
+@app.route('/api/museum-testimony/<filename>', methods=['GET'])
+@jwt_required()
+def get_museum_testimony(filename):
+    current_user_email = get_jwt_identity()
+    user = users.find_one({'email': current_user_email})
+    
+    if user['userType'] != 'museum':
+        return jsonify({"error": "Unauthorized access"}), 403
+
+    testimony = museum_testimonies.find_one(
+        {'user_email': current_user_email, 'filename': filename},
+        {'_id': 0}
+    )
+    
+    if not testimony:
+        return jsonify({"error": "Testimony not found"}), 404
+        
+    return jsonify({"testimony": testimony}), 200
+
+# New route to delete a specific testimony
+@app.route('/api/museum-testimony/<filename>', methods=['DELETE'])
+@jwt_required()
+def delete_museum_testimony(filename):
+    current_user_email = get_jwt_identity()
+    user = users.find_one({'email': current_user_email})
+    
+    if user['userType'] != 'museum':
+        return jsonify({"error": "Unauthorized access"}), 403
+
+    # Check if the testimony exists and belongs to the user
+    result = museum_testimonies.delete_one({
+        'user_email': current_user_email,
+        'filename': filename
+    })
+
+    if result.deleted_count == 0:
+        return jsonify({"error": "Testimony not found or you don't have permission to delete it"}), 404
+
+    return jsonify({"message": "Testimony deleted successfully"}), 200
+
+def extract_testimony_details(file_path):
+    # Process the document
+    full_text, vector_db = process_document(file_path)
 
     # Define prompt for extracting writer details
     writer_prompt_template = PromptTemplate(
@@ -267,7 +390,6 @@ def extract_testimony_details(pdf_path):
         - Age at time of testimony
         - Birth year
         - Death year
-        - If the owner is a soldier, their unit
 
         Text: {text}
 
@@ -278,33 +400,33 @@ def extract_testimony_details(pdf_path):
         Age at time: [value]
         Birth year: [value]
         Death year: [value]
-        Unit (if soldier): [value]
         """
     )
 
-    # Create and run the LLM chain for writer details
-    writer_chain = LLMChain(llm=llm, prompt=writer_prompt_template)
-    writer_result = writer_chain.run(text=full_text)
+    # Writer extraction
+    writer_query = "Details about the writer or owner of this testimony"
+    writer_relevant_text = retrieve_relevant_chunks(vector_db, writer_query, k=3)
+    writer_chain = LLMChain(llm=google_llm, prompt=writer_prompt_template)
+    writer_result = writer_chain.run(text=writer_relevant_text)
 
     # Define prompt for extracting mentioned people
     people_prompt_template = PromptTemplate(
         input_variables=["text"],
         template="""
-        You are an expert in analyzing war testimonies. Identify all people mentioned in the text, along with their roles (e.g., soldier, commander, civilian) and regions (e.g., country, city, or battlefield location) where they are associated. Ensure high accuracy by relying on explicit mentions and strong contextual evidence. If a role or region is unclear, mark it as "Unspecified". Ignore generic references (e.g., "the soldiers") and focus on named individuals or specific roles (like "the commander"). If a name appears multiple times, only list it once with the most relevant role and region. don't mention peoples in the references or notes section and don't mention again the owner's name of the testimony.
+        You are an expert in analyzing war testimonies. Identify all people mentioned in the text, along with their roles (e.g., soldier, commander, civilian) and regions (e.g., country, city, or battlefield location) where they are associated. Ensure high accuracy by relying on explicit mentions and strong contextual evidence. If a role or region is unclear, mark it as "Unspecified". Ignore generic references (e.g., "the soldiers") and focus on named individuals. If a name appears multiple times, only list it once with the most relevant role and region.
 
         Text: {text}
 
-        Return the result in EXACTLY this format for EACH person (one person per line):
-        - Name: [person name], Role: [person role], Region: [person region]
-        must Do not deviate from this format. Do not add extra text or explanations.
+        Return the result in this format:
+        - Name: [value], Role: [value], Region: [value]
         """
     )
 
-    # Create and run the LLM chain for people mentioned
-    people_chain = LLMChain(llm=llm, prompt=people_prompt_template)
-    people_result = people_chain.run(text=full_text)
-
-    print("people_result:", people_result)
+    # People extraction
+    people_query = "People mentioned in the testimony with their roles and regions"
+    people_relevant_text = retrieve_relevant_chunks(vector_db, people_query, k=3)
+    people_chain = LLMChain(llm=openai_llm, prompt=people_prompt_template)
+    people_result = people_chain.run(text=people_relevant_text)
 
     return writer_result, people_result
 
@@ -325,53 +447,36 @@ def parse_people_info(people_info):
     lines = people_info.strip().split('\n')
 
     for line in lines:
+        # Look for lines that contain information about a person
         if line.strip().startswith('-'):
-            # Remove the leading dash
-            line = line.strip()[1:].strip()
+            # Try different regex patterns to handle variations in format
+            name_match = re.search(r'Name:\s*\[(.*?)\]|Name:\s*(.*?)(?:,|$)', line)
+            role_match = re.search(r'Role:\s*\[(.*?)\]|Role:\s*(.*?)(?:,|$)', line)
+            region_match = re.search(r'Region:\s*\[(.*?)\]|Region:\s*(.*?)(?:,|$)', line)
 
-            # Initialize person data
-            person = {
-                "name": "Unspecified",
-                "role": "Unspecified",
-                "region": "Unspecified"
-            }
+            name = None
+            if name_match:
+                # Get the first non-None group
+                name = next((g for g in name_match.groups() if g is not None), None)
 
-            # Extract name (everything before "Role:")
-            if "Role:" in line:
-                name = line.split("Role:")[0].strip()
-                # Remove any trailing comma
-                if name.endswith(','):
-                    name = name[:-1].strip()
-                person["name"] = name
-            else:
-                # If no "Role:" marker, just use the whole line as name
-                person["name"] = line
+            if name:  # Only add if we found a name
+                role = next((g for g in role_match.groups() if g is not None), "Unspecified") if role_match else "Unspecified"
+                region = next((g for g in region_match.groups() if g is not None), "Unspecified") if region_match else "Unspecified"
 
-            # Extract role
-            if "Role:" in line:
-                role_part = line.split("Role:")[1]
-                if "Region:" in role_part:
-                    role = role_part.split("Region:")[0].strip()
-                    # Remove any trailing comma
-                    if role.endswith(','):
-                        role = role[:-1].strip()
-                    person["role"] = role
-                else:
-                    person["role"] = role_part.strip()
-
-            # Extract region
-            if "Region:" in line:
-                region = line.split("Region:")[1].strip()
-                person["region"] = region
-
-            # Add to the list if we have a name
-            if person["name"] and person["name"] != "Unspecified":
+                person = {
+                    "name": name.strip(),
+                    "role": role.strip(),
+                    "region": region.strip()
+                }
                 people_data.append(person)
 
-    # Debug logging
-    print(f"Extracted {len(people_data)} people from the testimony")
-    for person in people_data:
-        print(f"Person: {person}")
+    # If no people were found with the above method, try a simpler approach
+    if not people_data and people_info.strip():
+        # Just extract any lines that look like they contain person information
+        for line in lines:
+            if line.strip() and not line.strip().startswith('#') and ':' in line:
+                person = {"description": line.strip()}
+                people_data.append(person)
 
     return people_data
 

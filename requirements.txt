@@ -8,3 +8,5 @@ pypdf
 google-generativeai
 langchain-google-genai
 langchain-community
+langchain-openai
+faiss-cpu
