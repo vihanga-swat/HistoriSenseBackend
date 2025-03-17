@@ -17,6 +17,7 @@ from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.document_loaders import PyPDFLoader, Docx2txtLoader, TextLoader
 from langchain.prompts import PromptTemplate
 from langchain.chains import LLMChain
+from collections import Counter
 
 app = Flask(__name__)
 CORS(app, supports_credentials=True)  # Enable CORS with credentials support
@@ -148,9 +149,8 @@ def login():
 #         }), 200
 #     return jsonify({"error": "User not found"}), 404
 
-# New analysis functions
+# Document processing and chunk retrieval
 def process_document(file_path):
-    """Loads a document, extracts text, and splits it into chunks."""
     if file_path.endswith(".pdf"):
         loader = PyPDFLoader(file_path)
     elif file_path.endswith(".docx"):
@@ -159,7 +159,7 @@ def process_document(file_path):
         loader = TextLoader(file_path)
     else:
         raise ValueError("Unsupported file format")
-
+    
     documents = loader.load()
     full_text = "\n".join([doc.page_content for doc in documents])
     text_splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
@@ -173,7 +173,230 @@ def retrieve_relevant_chunks(vector_db, query, k=3):
     relevant_docs = retriever.get_relevant_documents(query)
     return "\n".join([doc.page_content for doc in relevant_docs])
 
-# New route for testimony analysis without database storage
+# Emotional Analysis
+def analyze_emotions_with_llm(vector_db):
+    emotion_query = "Text containing strong emotional content (e.g., anger, fear, sadness)"
+    relevant_text = retrieve_relevant_chunks(vector_db, emotion_query, k=3)
+    chunks = [relevant_text[i:i+500] for i in range(0, len(relevant_text), 500)]
+    
+    emotion_prompt_template = PromptTemplate(
+        input_variables=["text"],
+        template="""
+        Analyze the following text and identify the top 5 emotions present (e.g., anger, fear, joy, sadness, surprise, disgust, neutral). 
+        Provide a percentage score for each emotion based on your interpretation. Return only the top 5 emotions with their scores.
+
+        Text: {text}
+
+        Return the result in this format:
+        - [emotion]: [score]%
+        """
+    )
+    
+    emotion_chain = LLMChain(llm=openai_llm, prompt=emotion_prompt_template)
+    all_emotions = []
+    for chunk in chunks:
+        if chunk.strip():
+            result = emotion_chain.run(text=chunk)
+            all_emotions.append(result)
+    
+    emotion_scores = {'anger': 0, 'disgust': 0, 'fear': 0, 'joy': 0, 'neutral': 0, 'sadness': 0, 'surprise': 0}
+    count = 0
+    for result in all_emotions:
+        lines = result.strip().split('\n')
+        for line in lines:
+            if line.strip():
+                try:
+                    emotion, score = line.split(': ')
+                    emotion = emotion.strip('- ').lower()
+                    score = float(score.strip('%'))
+                    if emotion in emotion_scores:
+                        emotion_scores[emotion] += score
+                        count += 1
+                except ValueError:
+                    continue
+    if count > 0:
+        for emotion in emotion_scores:
+            emotion_scores[emotion] /= count
+    top_emotions = dict(sorted(emotion_scores.items(), key=lambda x: x[1], reverse=True)[:5])
+    return top_emotions
+
+# Geographical Analysis
+def extract_locations_with_llm(vector_db):
+    location_query = "Text containing geographical locations (e.g., cities, countries, regions)"
+    relevant_text = retrieve_relevant_chunks(vector_db, location_query, k=3)
+    chunks = [relevant_text[i:i+500] for i in range(0, len(relevant_text), 500)]
+    
+    location_prompt_template = PromptTemplate(
+        input_variables=["text"],
+        template="""
+        Extract all geographical locations (e.g., cities, countries, regions) mentioned in the text along with associated events or descriptions if present. 
+        For each location, provide a count of mentions and a brief description of the context (e.g., "Battle occurred here"). If no specific event is mentioned, use "Mentioned in context".
+
+        Text: {text}
+
+        Return the result in this format:
+        - [location]: [count], [description]
+        """
+    )
+    
+    location_chain = LLMChain(llm=google_llm, prompt=location_prompt_template)
+    all_locations = []
+    for chunk in chunks:
+        if chunk.strip():
+            result = location_chain.run(text=chunk)
+            all_locations.append(result)
+    
+    location_data = {}
+    for result in all_locations:
+        lines = result.strip().split('\n')
+        for line in lines:
+            if line.strip():
+                try:
+                    parts = line.split(': ', 1)
+                    if len(parts) < 2:
+                        continue
+                    location_info = parts[1].split(', ', 1)
+                    location = parts[0].strip('- ')
+                    count = int(location_info[0].strip())
+                    description = location_info[1].strip() if len(location_info) > 1 else "Mentioned in context"
+                    if location in location_data:
+                        location_data[location]['count'] += count
+                    else:
+                        location_data[location] = {'count': count, 'description': description}
+                except (ValueError, IndexError):
+                    continue
+    return location_data
+
+# Key Topics Extraction
+def extract_key_topics_with_llm(vector_db):
+    topic_query = "Text containing thematic content (e.g., military operations, civilian interactions)"
+    relevant_text = retrieve_relevant_chunks(vector_db, topic_query, k=3)
+    chunks = [relevant_text[i:i+500] for i in range(0, len(relevant_text), 500)]
+    
+    topic_prompt_template = PromptTemplate(
+        input_variables=["text"],
+        template="""
+        Analyze the following text and identify mentions of the following key topics: Military Operations, Civilian Interaction, War Impact, Daily Life, and Combat Experience. 
+        Count how many times each topic is referenced (either explicitly or contextually). Return the counts for each topic.
+
+        Text: {text}
+
+        Return the result in this format:
+        - [topic]: [count]
+        """
+    )
+    
+    topic_chain = LLMChain(llm=openai_llm, prompt=topic_prompt_template)
+    all_topics = []
+    for chunk in chunks:
+        if chunk.strip():
+            result = topic_chain.run(text=chunk)
+            all_topics.append(result)
+    
+    topic_counter = Counter({
+        "Military Operations": 0,
+        "Civilian Interaction": 0,
+        "War Impact": 0,
+        "Daily Life": 0,
+        "Combat Experience": 0
+    })
+    for result in all_topics:
+        lines = result.strip().split('\n')
+        for line in lines:
+            if line.strip():
+                try:
+                    topic, count = line.split(': ')
+                    topic = topic.strip('- ')
+                    count = int(count.strip())
+                    if topic in topic_counter:
+                        topic_counter[topic] += count
+                except ValueError:
+                    continue
+    return dict(topic_counter)
+
+# Updated extract_testimony_details
+def extract_testimony_details(file_path):
+    full_text, vector_db = process_document(file_path)
+    
+    # Writer details
+    writer_prompt_template = PromptTemplate(
+        input_variables=["text"],
+        template="""
+        You are an expert in analyzing war testimonies. Extract the following details about the owner from the text with high accuracy. If a detail is not explicitly mentioned, return "Not specified". Use context clues where possible but prioritize explicit mentions for accuracy:
+
+        - Name
+        - Country
+        - Role (e.g., soldier, civilian, nurse)
+        - Age at time of testimony
+        - Birth year
+        - Death year
+
+        Text: {text}
+
+        Return the result in this format:
+        Name: [value]
+        Country: [value]
+        Role: [value]
+        Age at time: [value]
+        Birth year: [value]
+        Death year: [value]
+        """
+    )
+    writer_query = "Details about the writer or owner of this testimony"
+    writer_relevant_text = retrieve_relevant_chunks(vector_db, writer_query, k=3)
+    writer_chain = LLMChain(llm=google_llm, prompt=writer_prompt_template)
+    writer_result = writer_chain.run(text=writer_relevant_text)
+
+    # People mentioned
+    people_prompt_template = PromptTemplate(
+        input_variables=["text"],
+        template="""
+        You are an expert in analyzing war testimonies. Identify all people mentioned in the text, along with their roles (e.g., soldier, commander, civilian) and regions (e.g., country, city, or battlefield location) where they are associated. Ensure high accuracy by relying on explicit mentions and strong contextual evidence. If a role or region is unclear, mark it as "Unspecified". Ignore generic references (e.g., "the soldiers") and focus on named individuals. If a name appears multiple times, only list it once with the most relevant role and region.
+
+        Text: {text}
+
+        Return the result in this format:
+        - Name: [value], Role: [value], Region: [value]
+        """
+    )
+    people_query = "People mentioned in the testimony with their roles and regions"
+    people_relevant_text = retrieve_relevant_chunks(vector_db, people_query, k=3)
+    people_chain = LLMChain(llm=openai_llm, prompt=people_prompt_template)
+    people_result = people_chain.run(text=people_relevant_text)
+
+    # Emotional, geographical, and topic analysis
+    emotions = analyze_emotions_with_llm(vector_db)
+    locations = extract_locations_with_llm(vector_db)
+    topics = extract_key_topics_with_llm(vector_db)
+
+    return writer_result, people_result, emotions, locations, topics
+
+# Parsing functions (unchanged)
+def parse_writer_info(writer_info):
+    lines = writer_info.strip().split('\n')
+    writer_data = {}
+    for line in lines:
+        if ':' in line:
+            key, value = line.split(':', 1)
+            writer_data[key.strip()] = value.strip()
+    return writer_data
+
+def parse_people_info(people_info):
+    people_data = []
+    lines = people_info.strip().split('\n')
+    for line in lines:
+        if line.strip().startswith('-'):
+            name_match = re.search(r'Name:\s*\[(.*?)\]|Name:\s*(.*?)(?:,|$)', line)
+            role_match = re.search(r'Role:\s*\[(.*?)\]|Role:\s*(.*?)(?:,|$)', line)
+            region_match = re.search(r'Region:\s*\[(.*?)\]|Region:\s*(.*?)(?:,|$)', line)
+            name = next((g for g in name_match.groups() if g is not None), None) if name_match else None
+            if name:
+                role = next((g for g in role_match.groups() if g is not None), "Unspecified") if role_match else "Unspecified"
+                region = next((g for g in region_match.groups() if g is not None), "Unspecified") if region_match else "Unspecified"
+                people_data.append({"name": name.strip(), "role": role.strip(), "region": region.strip()})
+    return people_data
+
+# Updated analyze-testimony route
 @app.route('/api/analyze-testimony', methods=['POST'])
 @jwt_required()
 def analyze_testimony():
@@ -185,7 +408,6 @@ def analyze_testimony():
         return jsonify({"error": "No files part"}), 400
 
     files = request.files.getlist('files')
-    
     if not files or all(f.filename == '' for f in files):
         return jsonify({"error": "No selected files"}), 400
 
@@ -206,29 +428,29 @@ def analyze_testimony():
                 files_to_remove.append(file_path)
 
                 # Process and analyze the file
-                writer_info, people_info = extract_testimony_details(file_path)
+                writer_info, people_info, emotions, locations, topics = extract_testimony_details(file_path)
                 writer_data = parse_writer_info(writer_info)
                 people_data = parse_people_info(people_info)
 
                 analysis_result = {
                     "filename": filename,
-                    "title": request.form.get(f'title_{filename}', filename),  # Get title from form data
+                    "title": request.form.get(f'title_{filename}', filename),
                     "description": request.form.get(f'description_{filename}', ''),
                     "writer_info": writer_data,
                     "people_mentioned": people_data,
+                    "emotions": emotions,
+                    "locations": locations,
+                    "topics": topics,
                     "upload_date": datetime.now().isoformat(),
                     "user_email": current_user_email,
-                    "file_type": '.' + filename.rsplit('.', 1)[1].lower()  # Store file type
+                    "file_type": '.' + filename.rsplit('.', 1)[1].lower()
                 }
 
                 if user_type == 'museum':
-                    # Store in MongoDB for museum users
                     museum_testimonies.insert_one(analysis_result)
                 else:
-                    # Store in session for individual users
                     analysis_results.append(analysis_result)
 
-        # Clean up temporary files
         for file_path in files_to_remove:
             try:
                 os.remove(file_path)
@@ -240,11 +462,10 @@ def analyze_testimony():
         else:
             return jsonify({
                 "message": "Testimony analyzed successfully",
-                "analysis": analysis_results[0]  # Only one file for individual
+                "analysis": analysis_results[0]
             }), 200
 
     except Exception as e:
-        # Clean up on error
         for file_path in files_to_remove:
             try:
                 os.remove(file_path)
@@ -374,111 +595,111 @@ def delete_museum_testimony(filename):
 
     return jsonify({"message": "Testimony deleted successfully"}), 200
 
-def extract_testimony_details(file_path):
-    # Process the document
-    full_text, vector_db = process_document(file_path)
+# def extract_testimony_details(file_path):
+#     # Process the document
+#     full_text, vector_db = process_document(file_path)
 
-    # Define prompt for extracting writer details
-    writer_prompt_template = PromptTemplate(
-        input_variables=["text"],
-        template="""
-        You are an expert in analyzing war testimonies. Extract the following details about the owner from the text with high accuracy. If a detail is not explicitly mentioned, return "Not specified". Use context clues where possible but prioritize explicit mentions for accuracy:
+#     # Define prompt for extracting writer details
+#     writer_prompt_template = PromptTemplate(
+#         input_variables=["text"],
+#         template="""
+#         You are an expert in analyzing war testimonies. Extract the following details about the owner from the text with high accuracy. If a detail is not explicitly mentioned, return "Not specified". Use context clues where possible but prioritize explicit mentions for accuracy:
 
-        - Name
-        - Country
-        - Role (e.g., soldier, civilian, nurse)
-        - Age at time of testimony
-        - Birth year
-        - Death year
+#         - Name
+#         - Country
+#         - Role (e.g., soldier, civilian, nurse)
+#         - Age at time of testimony
+#         - Birth year
+#         - Death year
 
-        Text: {text}
+#         Text: {text}
 
-        Return the result in this format:
-        Name: [value]
-        Country: [value]
-        Role: [value]
-        Age at time: [value]
-        Birth year: [value]
-        Death year: [value]
-        """
-    )
+#         Return the result in this format:
+#         Name: [value]
+#         Country: [value]
+#         Role: [value]
+#         Age at time: [value]
+#         Birth year: [value]
+#         Death year: [value]
+#         """
+#     )
 
-    # Writer extraction
-    writer_query = "Details about the writer or owner of this testimony"
-    writer_relevant_text = retrieve_relevant_chunks(vector_db, writer_query, k=3)
-    writer_chain = LLMChain(llm=google_llm, prompt=writer_prompt_template)
-    writer_result = writer_chain.run(text=writer_relevant_text)
+#     # Writer extraction
+#     writer_query = "Details about the writer or owner of this testimony"
+#     writer_relevant_text = retrieve_relevant_chunks(vector_db, writer_query, k=3)
+#     writer_chain = LLMChain(llm=google_llm, prompt=writer_prompt_template)
+#     writer_result = writer_chain.run(text=writer_relevant_text)
 
-    # Define prompt for extracting mentioned people
-    people_prompt_template = PromptTemplate(
-        input_variables=["text"],
-        template="""
-        You are an expert in analyzing war testimonies. Identify all people mentioned in the text, along with their roles (e.g., soldier, commander, civilian) and regions (e.g., country, city, or battlefield location) where they are associated. Ensure high accuracy by relying on explicit mentions and strong contextual evidence. If a role or region is unclear, mark it as "Unspecified". Ignore generic references (e.g., "the soldiers") and focus on named individuals. If a name appears multiple times, only list it once with the most relevant role and region.
+#     # Define prompt for extracting mentioned people
+#     people_prompt_template = PromptTemplate(
+#         input_variables=["text"],
+#         template="""
+#         You are an expert in analyzing war testimonies. Identify all people mentioned in the text, along with their roles (e.g., soldier, commander, civilian) and regions (e.g., country, city, or battlefield location) where they are associated. Ensure high accuracy by relying on explicit mentions and strong contextual evidence. If a role or region is unclear, mark it as "Unspecified". Ignore generic references (e.g., "the soldiers") and focus on named individuals. If a name appears multiple times, only list it once with the most relevant role and region.
 
-        Text: {text}
+#         Text: {text}
 
-        Return the result in this format:
-        - Name: [value], Role: [value], Region: [value]
-        """
-    )
+#         Return the result in this format:
+#         - Name: [value], Role: [value], Region: [value]
+#         """
+#     )
 
-    # People extraction
-    people_query = "People mentioned in the testimony with their roles and regions"
-    people_relevant_text = retrieve_relevant_chunks(vector_db, people_query, k=3)
-    people_chain = LLMChain(llm=openai_llm, prompt=people_prompt_template)
-    people_result = people_chain.run(text=people_relevant_text)
+#     # People extraction
+#     people_query = "People mentioned in the testimony with their roles and regions"
+#     people_relevant_text = retrieve_relevant_chunks(vector_db, people_query, k=3)
+#     people_chain = LLMChain(llm=openai_llm, prompt=people_prompt_template)
+#     people_result = people_chain.run(text=people_relevant_text)
 
-    return writer_result, people_result
+#     return writer_result, people_result
 
-def parse_writer_info(writer_info):
-    # Parse the writer info string into a structured dictionary
-    lines = writer_info.strip().split('\n')
-    writer_data = {}
+# def parse_writer_info(writer_info):
+#     # Parse the writer info string into a structured dictionary
+#     lines = writer_info.strip().split('\n')
+#     writer_data = {}
 
-    for line in lines:
-        if ':' in line:
-            key, value = line.split(':', 1)
-            writer_data[key.strip()] = value.strip()
+#     for line in lines:
+#         if ':' in line:
+#             key, value = line.split(':', 1)
+#             writer_data[key.strip()] = value.strip()
 
-    return writer_data
+#     return writer_data
 
-def parse_people_info(people_info):
-    people_data = []
-    lines = people_info.strip().split('\n')
+# def parse_people_info(people_info):
+#     people_data = []
+#     lines = people_info.strip().split('\n')
 
-    for line in lines:
-        # Look for lines that contain information about a person
-        if line.strip().startswith('-'):
-            # Try different regex patterns to handle variations in format
-            name_match = re.search(r'Name:\s*\[(.*?)\]|Name:\s*(.*?)(?:,|$)', line)
-            role_match = re.search(r'Role:\s*\[(.*?)\]|Role:\s*(.*?)(?:,|$)', line)
-            region_match = re.search(r'Region:\s*\[(.*?)\]|Region:\s*(.*?)(?:,|$)', line)
+#     for line in lines:
+#         # Look for lines that contain information about a person
+#         if line.strip().startswith('-'):
+#             # Try different regex patterns to handle variations in format
+#             name_match = re.search(r'Name:\s*\[(.*?)\]|Name:\s*(.*?)(?:,|$)', line)
+#             role_match = re.search(r'Role:\s*\[(.*?)\]|Role:\s*(.*?)(?:,|$)', line)
+#             region_match = re.search(r'Region:\s*\[(.*?)\]|Region:\s*(.*?)(?:,|$)', line)
 
-            name = None
-            if name_match:
-                # Get the first non-None group
-                name = next((g for g in name_match.groups() if g is not None), None)
+#             name = None
+#             if name_match:
+#                 # Get the first non-None group
+#                 name = next((g for g in name_match.groups() if g is not None), None)
 
-            if name:  # Only add if we found a name
-                role = next((g for g in role_match.groups() if g is not None), "Unspecified") if role_match else "Unspecified"
-                region = next((g for g in region_match.groups() if g is not None), "Unspecified") if region_match else "Unspecified"
+#             if name:  # Only add if we found a name
+#                 role = next((g for g in role_match.groups() if g is not None), "Unspecified") if role_match else "Unspecified"
+#                 region = next((g for g in region_match.groups() if g is not None), "Unspecified") if region_match else "Unspecified"
 
-                person = {
-                    "name": name.strip(),
-                    "role": role.strip(),
-                    "region": region.strip()
-                }
-                people_data.append(person)
+#                 person = {
+#                     "name": name.strip(),
+#                     "role": role.strip(),
+#                     "region": region.strip()
+#                 }
+#                 people_data.append(person)
 
-    # If no people were found with the above method, try a simpler approach
-    if not people_data and people_info.strip():
-        # Just extract any lines that look like they contain person information
-        for line in lines:
-            if line.strip() and not line.strip().startswith('#') and ':' in line:
-                person = {"description": line.strip()}
-                people_data.append(person)
+#     # If no people were found with the above method, try a simpler approach
+#     if not people_data and people_info.strip():
+#         # Just extract any lines that look like they contain person information
+#         for line in lines:
+#             if line.strip() and not line.strip().startswith('#') and ':' in line:
+#                 person = {"description": line.strip()}
+#                 people_data.append(person)
 
-    return people_data
+#     return people_data
 
 # @app.route('/api/testimonies', methods=['GET'])
 # @jwt_required()
