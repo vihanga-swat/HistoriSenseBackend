@@ -168,7 +168,7 @@ def process_document(file_path):
     return full_text, vector_db
 
 def retrieve_relevant_chunks(vector_db, query, k=3):
-    """Retrieves the top k relevant document chunks for a given query."""
+    # Retrieves the top k relevant document chunks for a given query.
     retriever = vector_db.as_retriever(search_kwargs={"k": k})
     relevant_docs = retriever.get_relevant_documents(query)
     return "\n".join([doc.page_content for doc in relevant_docs])
@@ -178,12 +178,12 @@ def analyze_emotions_with_llm(vector_db):
     emotion_query = "Text containing strong emotional content (e.g., anger, fear, sadness)"
     relevant_text = retrieve_relevant_chunks(vector_db, emotion_query, k=3)
     chunks = [relevant_text[i:i+500] for i in range(0, len(relevant_text), 500)]
-    
+
     emotion_prompt_template = PromptTemplate(
         input_variables=["text"],
         template="""
-        Analyze the following text and identify the top 5 emotions present (e.g., anger, fear, joy, sadness, surprise, disgust, neutral). 
-        Provide a percentage score for each emotion based on your interpretation. Return only the top 5 emotions with their scores.
+        Analyze the following text and identify the top 5 emotions present (e.g., anger, fear, joy, sadness, surprise, disgust, neutral).
+        Provide a percentage score for each emotion based on your interpretation. The percentages should add up to 100%.
 
         Text: {text}
 
@@ -191,16 +191,18 @@ def analyze_emotions_with_llm(vector_db):
         - [emotion]: [score]%
         """
     )
-    
+
     emotion_chain = LLMChain(llm=openai_llm, prompt=emotion_prompt_template)
     all_emotions = []
     for chunk in chunks:
         if chunk.strip():
             result = emotion_chain.run(text=chunk)
             all_emotions.append(result)
-    
-    emotion_scores = {'anger': 0, 'disgust': 0, 'fear': 0, 'joy': 0, 'neutral': 0, 'sadness': 0, 'surprise': 0}
-    count = 0
+
+    # Initialize counter for all emotions
+    emotion_counter = Counter()
+
+    # Process all emotion results
     for result in all_emotions:
         lines = result.strip().split('\n')
         for line in lines:
@@ -209,15 +211,28 @@ def analyze_emotions_with_llm(vector_db):
                     emotion, score = line.split(': ')
                     emotion = emotion.strip('- ').lower()
                     score = float(score.strip('%'))
-                    if emotion in emotion_scores:
-                        emotion_scores[emotion] += score
-                        count += 1
+                    emotion_counter[emotion] += score
                 except ValueError:
                     continue
-    if count > 0:
-        for emotion in emotion_scores:
-            emotion_scores[emotion] /= count
-    top_emotions = dict(sorted(emotion_scores.items(), key=lambda x: x[1], reverse=True)[:5])
+
+    # Calculate total score to normalize
+    total_score = sum(emotion_counter.values())
+
+    # Normalize to ensure percentages add up to 100%
+    if total_score > 0:
+        normalized_emotions = {emotion: (score / total_score) * 100 for emotion, score in emotion_counter.items()}
+    else:
+        normalized_emotions = emotion_counter
+
+    # Get top 5 emotions
+    top_emotions = dict(sorted(normalized_emotions.items(), key=lambda x: x[1], reverse=True)[:5])
+
+    # Ensure top 5 emotions add up to 100%
+    top_total = sum(top_emotions.values())
+    if top_total > 0:
+        # Round to 2 decimal places
+        top_emotions = {emotion: round((score / top_total) * 100, 2) for emotion, score in top_emotions.items()}
+
     return top_emotions
 
 # Geographical Analysis
@@ -272,47 +287,60 @@ def extract_key_topics_with_llm(vector_db):
     topic_query = "Text containing thematic content (e.g., military operations, civilian interactions)"
     relevant_text = retrieve_relevant_chunks(vector_db, topic_query, k=3)
     chunks = [relevant_text[i:i+500] for i in range(0, len(relevant_text), 500)]
-    
+
     topic_prompt_template = PromptTemplate(
         input_variables=["text"],
         template="""
-        Analyze the following text and identify mentions of the following key topics: Military Operations, Civilian Interaction, War Impact, Daily Life, and Combat Experience. 
-        Count how many times each topic is referenced (either explicitly or contextually). Return the counts for each topic.
+        Analyze the following text and identify mentions of the following key topics: Military Operations, Civilian Interaction, War Impact, Daily Life, and Combat Experience.
+        Provide a percentage score for each topic based on its prevalence in the text. The percentages should add up to 100%.
 
         Text: {text}
 
         Return the result in this format:
-        - [topic]: [count]
+        - [topic]: [percentage]%
         """
     )
-    
+
     topic_chain = LLMChain(llm=openai_llm, prompt=topic_prompt_template)
     all_topics = []
     for chunk in chunks:
         if chunk.strip():
             result = topic_chain.run(text=chunk)
             all_topics.append(result)
-    
-    topic_counter = Counter({
-        "Military Operations": 0,
-        "Civilian Interaction": 0,
-        "War Impact": 0,
-        "Daily Life": 0,
-        "Combat Experience": 0
-    })
+
+    # Initialize counter for all topics
+    topic_counter = Counter()
+
+    # Process all topic results
     for result in all_topics:
         lines = result.strip().split('\n')
         for line in lines:
             if line.strip():
                 try:
-                    topic, count = line.split(': ')
+                    topic, score = line.split(': ')
                     topic = topic.strip('- ')
-                    count = int(count.strip())
-                    if topic in topic_counter:
-                        topic_counter[topic] += count
+                    score = float(score.strip('%'))
+                    topic_counter[topic] += score
                 except ValueError:
                     continue
-    return dict(topic_counter)
+
+    # Calculate total score to normalize
+    total_score = sum(topic_counter.values())
+    # Normalize to ensure percentages add up to 100%
+    if total_score > 0:
+        # Round to 2 decimal places
+        normalized_topics = {topic: round((score / total_score) * 100, 2) for topic, score in topic_counter.items()}
+    else:
+        normalized_topics = {
+            "Military Operations": 0,
+            "Civilian Interaction": 0,
+            "War Impact": 0,
+            "Daily Life": 0,
+            "Combat Experience": 0
+        }
+    # Sort topics by percentage
+    sorted_topics = dict(sorted(normalized_topics.items(), key=lambda x: x[1], reverse=True))
+    return sorted_topics
 
 # Updated extract_testimony_details
 def extract_testimony_details(file_path):
@@ -473,66 +501,6 @@ def analyze_testimony():
                 pass
         return jsonify({"error": f"Error processing testimonies: {str(e)}"}), 500
 
-# New routes for testimony analysis
-# @app.route('/api/upload-testimony', methods=['POST'])
-# @jwt_required()
-# def upload_testimony():
-#     current_user_email = get_jwt_identity()
-
-#     # Check if the post request has the file part
-#     if 'file' not in request.files:
-#         return jsonify({"error": "No file part"}), 400
-
-#     file = request.files['file']
-
-#     # If user does not select file, browser also submits an empty part without filename
-#     if file.filename == '':
-#         return jsonify({"error": "No selected file"}), 400
-
-#     if file and allowed_file(file.filename):
-#         filename = secure_filename(file.filename)
-#         file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-#         file.save(file_path)
-
-#         try:
-#             # Process the uploaded PDF
-#             writer_info, people_info = extract_testimony_details(file_path)
-
-#             # Log the raw responses for debugging
-#             app.logger.info(f"Raw writer info: {writer_info}")
-#             app.logger.info(f"Raw people info: {people_info}")
-
-#             # Parse writer info into structured data
-#             writer_data = parse_writer_info(writer_info)
-#             people_data = parse_people_info(people_info)
-
-#             # Log the parsed data
-#             app.logger.info(f"Parsed writer data: {writer_data}")
-#             app.logger.info(f"Parsed people data: {people_data}")
-
-#             # Save to database
-#             testimony_data = {
-#                 "user_email": current_user_email,
-#                 "filename": filename,
-#                 "file_path": file_path,
-#                 "writer_info": writer_data,
-#                 "people_mentioned": people_data
-#             }
-
-#             result = testimonies.insert_one(testimony_data)
-
-#             return jsonify({
-#                 "message": "Testimony uploaded and analyzed successfully",
-#                 "testimony_id": str(result.inserted_id),
-#                 "writer_info": writer_data,
-#                 "people_mentioned": people_data
-#             }), 201
-
-#         except Exception as e:
-#             return jsonify({"error": f"Error processing testimony: {str(e)}"}), 500
-
-#     return jsonify({"error": "File type not allowed"}), 400
-
 # New route to get museum testimonies list
 @app.route('/api/museum-testimonies', methods=['GET'])
 @jwt_required()
@@ -594,146 +562,6 @@ def delete_museum_testimony(filename):
         return jsonify({"error": "Testimony not found or you don't have permission to delete it"}), 404
 
     return jsonify({"message": "Testimony deleted successfully"}), 200
-
-# def extract_testimony_details(file_path):
-#     # Process the document
-#     full_text, vector_db = process_document(file_path)
-
-#     # Define prompt for extracting writer details
-#     writer_prompt_template = PromptTemplate(
-#         input_variables=["text"],
-#         template="""
-#         You are an expert in analyzing war testimonies. Extract the following details about the owner from the text with high accuracy. If a detail is not explicitly mentioned, return "Not specified". Use context clues where possible but prioritize explicit mentions for accuracy:
-
-#         - Name
-#         - Country
-#         - Role (e.g., soldier, civilian, nurse)
-#         - Age at time of testimony
-#         - Birth year
-#         - Death year
-
-#         Text: {text}
-
-#         Return the result in this format:
-#         Name: [value]
-#         Country: [value]
-#         Role: [value]
-#         Age at time: [value]
-#         Birth year: [value]
-#         Death year: [value]
-#         """
-#     )
-
-#     # Writer extraction
-#     writer_query = "Details about the writer or owner of this testimony"
-#     writer_relevant_text = retrieve_relevant_chunks(vector_db, writer_query, k=3)
-#     writer_chain = LLMChain(llm=google_llm, prompt=writer_prompt_template)
-#     writer_result = writer_chain.run(text=writer_relevant_text)
-
-#     # Define prompt for extracting mentioned people
-#     people_prompt_template = PromptTemplate(
-#         input_variables=["text"],
-#         template="""
-#         You are an expert in analyzing war testimonies. Identify all people mentioned in the text, along with their roles (e.g., soldier, commander, civilian) and regions (e.g., country, city, or battlefield location) where they are associated. Ensure high accuracy by relying on explicit mentions and strong contextual evidence. If a role or region is unclear, mark it as "Unspecified". Ignore generic references (e.g., "the soldiers") and focus on named individuals. If a name appears multiple times, only list it once with the most relevant role and region.
-
-#         Text: {text}
-
-#         Return the result in this format:
-#         - Name: [value], Role: [value], Region: [value]
-#         """
-#     )
-
-#     # People extraction
-#     people_query = "People mentioned in the testimony with their roles and regions"
-#     people_relevant_text = retrieve_relevant_chunks(vector_db, people_query, k=3)
-#     people_chain = LLMChain(llm=openai_llm, prompt=people_prompt_template)
-#     people_result = people_chain.run(text=people_relevant_text)
-
-#     return writer_result, people_result
-
-# def parse_writer_info(writer_info):
-#     # Parse the writer info string into a structured dictionary
-#     lines = writer_info.strip().split('\n')
-#     writer_data = {}
-
-#     for line in lines:
-#         if ':' in line:
-#             key, value = line.split(':', 1)
-#             writer_data[key.strip()] = value.strip()
-
-#     return writer_data
-
-# def parse_people_info(people_info):
-#     people_data = []
-#     lines = people_info.strip().split('\n')
-
-#     for line in lines:
-#         # Look for lines that contain information about a person
-#         if line.strip().startswith('-'):
-#             # Try different regex patterns to handle variations in format
-#             name_match = re.search(r'Name:\s*\[(.*?)\]|Name:\s*(.*?)(?:,|$)', line)
-#             role_match = re.search(r'Role:\s*\[(.*?)\]|Role:\s*(.*?)(?:,|$)', line)
-#             region_match = re.search(r'Region:\s*\[(.*?)\]|Region:\s*(.*?)(?:,|$)', line)
-
-#             name = None
-#             if name_match:
-#                 # Get the first non-None group
-#                 name = next((g for g in name_match.groups() if g is not None), None)
-
-#             if name:  # Only add if we found a name
-#                 role = next((g for g in role_match.groups() if g is not None), "Unspecified") if role_match else "Unspecified"
-#                 region = next((g for g in region_match.groups() if g is not None), "Unspecified") if region_match else "Unspecified"
-
-#                 person = {
-#                     "name": name.strip(),
-#                     "role": role.strip(),
-#                     "region": region.strip()
-#                 }
-#                 people_data.append(person)
-
-#     # If no people were found with the above method, try a simpler approach
-#     if not people_data and people_info.strip():
-#         # Just extract any lines that look like they contain person information
-#         for line in lines:
-#             if line.strip() and not line.strip().startswith('#') and ':' in line:
-#                 person = {"description": line.strip()}
-#                 people_data.append(person)
-
-#     return people_data
-
-# @app.route('/api/testimonies', methods=['GET'])
-# @jwt_required()
-# def get_testimonies():
-#     current_user_email = get_jwt_identity()
-#     user = users.find_one({'email': current_user_email})
-
-#     # For museum users, return all testimonies
-#     # For individual users, return only their own testimonies
-#     if user['userType'] == 'museum':
-#         testimony_list = list(testimonies.find({}))
-#     else:
-#         testimony_list = list(testimonies.find({"user_email": current_user_email}))
-
-#     # Convert ObjectId to string for JSON serialization
-#     for testimony in testimony_list:
-#         testimony['_id'] = str(testimony['_id'])
-
-#     return jsonify(testimony_list), 200
-
-# @app.route('/api/testimony/<testimony_id>', methods=['GET'])
-# @jwt_required()
-# def get_testimony(testimony_id):
-#     from bson.objectid import ObjectId
-
-#     testimony = testimonies.find_one({"_id": ObjectId(testimony_id)})
-
-#     if not testimony:
-#         return jsonify({"error": "Testimony not found"}), 404
-
-#     # Convert ObjectId to string for JSON serialization
-#     testimony['_id'] = str(testimony['_id'])
-
-#     return jsonify(testimony), 200
 
 if __name__ == '__main__':
     app.run(debug=True)
