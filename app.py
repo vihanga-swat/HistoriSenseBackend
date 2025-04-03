@@ -162,206 +162,163 @@ def process_document(file_path):
     
     documents = loader.load()
     full_text = "\n".join([doc.page_content for doc in documents])
-    text_splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
-    chunks = text_splitter.split_documents(documents)
-    vector_db = FAISS.from_documents(chunks, embeddings)
-    return full_text, vector_db
-
-def retrieve_relevant_chunks(vector_db, query, k=3):
-    # Retrieves the top k relevant document chunks for a given query.
-    retriever = vector_db.as_retriever(search_kwargs={"k": k})
-    relevant_docs = retriever.get_relevant_documents(query)
-    return "\n".join([doc.page_content for doc in relevant_docs])
+    return full_text
 
 # Emotional Analysis
-def analyze_emotions_with_llm(vector_db):
-    emotion_query = "Text containing strong emotional content (e.g., anger, fear, sadness)"
-    relevant_text = retrieve_relevant_chunks(vector_db, emotion_query, k=3)
-    chunks = [relevant_text[i:i+500] for i in range(0, len(relevant_text), 500)]
+def analyze_emotions(full_text):
+    analysis_text = full_text
 
     emotion_prompt_template = PromptTemplate(
         input_variables=["text"],
         template="""
-        Analyze the following text and identify the top 5 emotions present (e.g., anger, fear, joy, sadness, surprise, disgust, neutral).
-        Provide a percentage score for each emotion based on your interpretation. The percentages should add up to 100%.
+        Analyze the following war testimony and identify the top 5 emotions present.
+        Focus on the emotional state of the writer and the emotional tone of the narrative.
+
+        Consider emotions such as: Fear, Determination, Relief, Disgust, Hope, Anger, Sadness,
+        Surprise, Neutral, Anxiety, Desperation, Gratitude, etc.
+
+        Provide a percentage for each emotion that reflects its prominence in the text.
+        The percentages should add up to 100% across the top 5 emotions.
 
         Text: {text}
 
-        Return the result in this format:
-        - [emotion]: [score]%
+        Return ONLY the top 5 emotions with their percentages in this exact format:
+        - [Emotion]: [XX.X]%
+        - [Emotion]: [XX.X]%
+        - [Emotion]: [XX.X]%
+        - [Emotion]: [XX.X]%
+        - [Emotion]: [XX.X]%
         """
     )
 
     emotion_chain = LLMChain(llm=openai_llm, prompt=emotion_prompt_template)
-    all_emotions = []
-    for chunk in chunks:
-        if chunk.strip():
-            result = emotion_chain.run(text=chunk)
-            all_emotions.append(result)
+    result = emotion_chain.run(text=analysis_text)
 
-    # Initialize counter for all emotions
-    emotion_counter = Counter()
+    # Parse the emotions
+    emotions = {}
+    for line in result.strip().split('\n'):
+        if line.strip():
+            try:
+                parts = line.split(': ')
+                if len(parts) == 2:
+                    emotion = parts[0].strip('- ')
+                    percentage = float(parts[1].strip('%'))
+                    emotions[emotion] = percentage
+            except (ValueError, IndexError):
+                continue
 
-    # Process all emotion results
-    for result in all_emotions:
-        lines = result.strip().split('\n')
-        for line in lines:
-            if line.strip():
-                try:
-                    emotion, score = line.split(': ')
-                    emotion = emotion.strip('- ').lower()
-                    score = float(score.strip('%'))
-                    emotion_counter[emotion] += score
-                except ValueError:
-                    continue
-
-    # Calculate total score to normalize
-    total_score = sum(emotion_counter.values())
-
-    # Normalize to ensure percentages add up to 100%
-    if total_score > 0:
-        normalized_emotions = {emotion: (score / total_score) * 100 for emotion, score in emotion_counter.items()}
-    else:
-        normalized_emotions = emotion_counter
-
-    # Get top 5 emotions
-    top_emotions = dict(sorted(normalized_emotions.items(), key=lambda x: x[1], reverse=True)[:5])
-
-    # Ensure top 5 emotions add up to 100%
-    top_total = sum(top_emotions.values())
-    if top_total > 0:
-        # Round to 2 decimal places
-        top_emotions = {emotion: round((score / top_total) * 100, 2) for emotion, score in top_emotions.items()}
-
-    return top_emotions
+    return emotions
 
 # Geographical Analysis
-def extract_locations_with_llm(vector_db):
-    location_query = "Text containing geographical locations (e.g., cities, countries, regions)"
-    relevant_text = retrieve_relevant_chunks(vector_db, location_query, k=3)
-    chunks = [relevant_text[i:i+500] for i in range(0, len(relevant_text), 500)]
-    
+def extract_locations(full_text):
+    analysis_text = full_text
+
     location_prompt_template = PromptTemplate(
         input_variables=["text"],
         template="""
-        Extract all geographical locations (e.g., cities, countries, regions) mentioned in the text along with associated events or descriptions if present. 
-        For each location, provide a count of mentions and a brief description of the context (e.g., "Battle occurred here"). If no specific event is mentioned, use "Mentioned in context".
+        Extract all geographical locations (cities, countries, regions, specific places) mentioned in this war testimony.
+        Count the number of times each location is mentioned.
+        Focus only on real geographical places, not generic terms.
 
         Text: {text}
 
-        Return the result in this format:
-        - [location]: [count], [description]
+        Return the locations in descending order of mentions in this exact format:
+        1. [Location]: [X] mentions
+        2. [Location]: [X] mentions
+        3. [Location]: [X] mentions
+        ...and so on
         """
     )
-    
+
     location_chain = LLMChain(llm=google_llm, prompt=location_prompt_template)
-    all_locations = []
-    for chunk in chunks:
-        if chunk.strip():
-            result = location_chain.run(text=chunk)
-            all_locations.append(result)
-    
-    location_data = {}
-    for result in all_locations:
-        lines = result.strip().split('\n')
-        for line in lines:
-            if line.strip():
-                try:
-                    parts = line.split(': ', 1)
-                    if len(parts) < 2:
-                        continue
-                    location_info = parts[1].split(', ', 1)
-                    location = parts[0].strip('- ')
-                    count = int(location_info[0].strip())
-                    description = location_info[1].strip() if len(location_info) > 1 else "Mentioned in context"
-                    if location in location_data:
-                        location_data[location]['count'] += count
-                    else:
-                        location_data[location] = {'count': count, 'description': description}
-                except (ValueError, IndexError):
-                    continue
-    return location_data
+    result = location_chain.run(text=analysis_text)
+
+    # Parse the locations
+    locations = {}
+    for line in result.strip().split('\n'):
+        if line.strip():
+            try:
+                parts = line.split(': ')
+                if len(parts) == 2:
+                    location_with_num = parts[0].strip()
+                    location = location_with_num.split('. ')[1] if '. ' in location_with_num else location_with_num
+                    count_part = parts[1].split(' ')[0]
+                    count = int(count_part)
+                    locations[location] = count
+            except (ValueError, IndexError):
+                continue
+
+    return locations
 
 # Key Topics Extraction
-def extract_key_topics_with_llm(vector_db):
-    topic_query = "Text containing thematic content (e.g., military operations, civilian interactions)"
-    relevant_text = retrieve_relevant_chunks(vector_db, topic_query, k=3)
-    chunks = [relevant_text[i:i+500] for i in range(0, len(relevant_text), 500)]
+def extract_key_topics(full_text):
+    analysis_text = full_text
 
     topic_prompt_template = PromptTemplate(
         input_variables=["text"],
         template="""
-        Analyze the following text and identify mentions of the following key topics: Military Operations, Civilian Interaction, War Impact, Daily Life, and Combat Experience.
-        Provide a percentage score for each topic based on its prevalence in the text. The percentages should add up to 100%.
+        Analyze this war testimony and identify the top 5 key topics or themes.
+        Consider topics such as: Combat Experience, Emigration Process, War Impact, Daily Life,
+        Military Operations, Civilian Interaction, etc.
+
+        For each topic, calculate a percentage that represents how prominent it is in the testimony.
+        The percentages should add up to 100% across the top 5 topics.
 
         Text: {text}
 
-        Return the result in this format:
-        - [topic]: [percentage]%
+        Return ONLY the top 5 topics with their percentages in this exact format:
+        1. [Topic]: [XX.X]%
+        2. [Topic]: [XX.X]%
+        3. [Topic]: [XX.X]%
+        4. [Topic]: [XX.X]%
+        5. [Topic]: [XX.X]%
         """
     )
 
     topic_chain = LLMChain(llm=openai_llm, prompt=topic_prompt_template)
-    all_topics = []
-    for chunk in chunks:
-        if chunk.strip():
-            result = topic_chain.run(text=chunk)
-            all_topics.append(result)
+    result = topic_chain.run(text=analysis_text)
 
-    # Initialize counter for all topics
-    topic_counter = Counter()
+    # Parse the topics
+    topics = {}
+    for line in result.strip().split('\n'):
+        if line.strip():
+            try:
+                parts = line.split(': ')
+                if len(parts) == 2:
+                    topic_with_num = parts[0].strip()
+                    topic = topic_with_num.split('. ')[1] if '. ' in topic_with_num else topic_with_num
+                    percentage = float(parts[1].strip('%'))
+                    topics[topic] = percentage
+            except (ValueError, IndexError):
+                continue
 
-    # Process all topic results
-    for result in all_topics:
-        lines = result.strip().split('\n')
-        for line in lines:
-            if line.strip():
-                try:
-                    topic, score = line.split(': ')
-                    topic = topic.strip('- ')
-                    score = float(score.strip('%'))
-                    topic_counter[topic] += score
-                except ValueError:
-                    continue
-
-    # Calculate total score to normalize
-    total_score = sum(topic_counter.values())
-    # Normalize to ensure percentages add up to 100%
-    if total_score > 0:
-        # Round to 2 decimal places
-        normalized_topics = {topic: round((score / total_score) * 100, 2) for topic, score in topic_counter.items()}
-    else:
-        normalized_topics = {
-            "Military Operations": 0,
-            "Civilian Interaction": 0,
-            "War Impact": 0,
-            "Daily Life": 0,
-            "Combat Experience": 0
-        }
-    # Sort topics by percentage
-    sorted_topics = dict(sorted(normalized_topics.items(), key=lambda x: x[1], reverse=True))
-    return sorted_topics
+    return topics
 
 # Updated extract_testimony_details
 def extract_testimony_details(file_path):
-    full_text, vector_db = process_document(file_path)
-    
+    full_text = process_document(file_path)
+
+    # Use a maximum of 15000 characters to avoid token limits
+    analysis_text = full_text
+
     # Writer details
     writer_prompt_template = PromptTemplate(
         input_variables=["text"],
         template="""
-        You are an expert in analyzing war testimonies. Extract the following details about the owner from the text with high accuracy. If a detail is not explicitly mentioned, return "Not specified". Use context clues where possible but prioritize explicit mentions for accuracy:
+        Extract the following details about the writer of this war testimony:
+        - Full Name
+        - Country of origin
+        - Role during the war (e.g., Civilian, Military, etc.)
+        - Age at the time of events described
+        - Birth year (calculate if possible)
+        - Death year (if mentioned)
 
-        - Name
-        - Country
-        - Role (e.g., soldier, civilian, nurse)
-        - Age at time of testimony
-        - Birth year
-        - Death year
+        If any detail is not explicitly mentioned, make a reasonable inference based on the text.
+        If you cannot determine a detail even through inference, state "Not specified".
 
         Text: {text}
 
-        Return the result in this format:
+        Return ONLY these details in this exact format:
         Name: [value]
         Country: [value]
         Role: [value]
@@ -370,32 +327,38 @@ def extract_testimony_details(file_path):
         Death year: [value]
         """
     )
-    writer_query = "Details about the writer or owner of this testimony"
-    writer_relevant_text = retrieve_relevant_chunks(vector_db, writer_query, k=3)
+
     writer_chain = LLMChain(llm=google_llm, prompt=writer_prompt_template)
-    writer_result = writer_chain.run(text=writer_relevant_text)
+    writer_result = writer_chain.run(text=analysis_text)
 
     # People mentioned
     people_prompt_template = PromptTemplate(
         input_variables=["text"],
         template="""
-        You are an expert in analyzing war testimonies. Identify all people mentioned in the text, along with their roles (e.g., soldier, commander, civilian) and regions (e.g., country, city, or battlefield location) where they are associated. Ensure high accuracy by relying on explicit mentions and strong contextual evidence. If a role or region is unclear, mark it as "Unspecified". Ignore generic references (e.g., "the soldiers") and focus on named individuals. If a name appears multiple times, only list it once with the most relevant role and region.
+        Extract all people mentioned in this war testimony (excluding the writer).
+        For each person, identify:
+        - Their full name
+        - Their role or relationship to the writer
+        - The region/location they are associated with
 
         Text: {text}
 
-        Return the result in this format:
-        - Name: [value], Role: [value], Region: [value]
+        Return ONLY these details in this exact format:
+        - Name: [name], Role: [role], Region: [region]
+        - Name: [name], Role: [role], Region: [region]
+        - Name: [name], Role: [role], Region: [region]
+        - Name: [name], Role: [role], Region: [region]
+        ...and so on
         """
     )
-    people_query = "People mentioned in the testimony with their roles and regions"
-    people_relevant_text = retrieve_relevant_chunks(vector_db, people_query, k=3)
+
     people_chain = LLMChain(llm=openai_llm, prompt=people_prompt_template)
-    people_result = people_chain.run(text=people_relevant_text)
+    people_result = people_chain.run(text=analysis_text)
 
     # Emotional, geographical, and topic analysis
-    emotions = analyze_emotions_with_llm(vector_db)
-    locations = extract_locations_with_llm(vector_db)
-    topics = extract_key_topics_with_llm(vector_db)
+    emotions = analyze_emotions(full_text)
+    locations = extract_locations(full_text)
+    topics = extract_key_topics(full_text)
 
     return writer_result, people_result, emotions, locations, topics
 
