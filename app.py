@@ -149,7 +149,7 @@ def login():
 #         }), 200
 #     return jsonify({"error": "User not found"}), 404
 
-# Document processing and chunk retrieval
+# Document processing
 def process_document(file_path):
     if file_path.endswith(".pdf"):
         loader = PyPDFLoader(file_path)
@@ -258,8 +258,8 @@ def extract_key_topics(full_text):
         input_variables=["text"],
         template="""
         Analyze this war testimony and identify the top 5 key topics or themes.
-        Consider topics such as: Combat Experience, Emigration Process, War Impact, Daily Life,
-        Military Operations, Civilian Interaction, etc.
+        Consider topics as: Combat Experience, Emigration Process, War Impact, Daily Life,
+        Military Operations and Civilian Interaction.
 
         For each topic, calculate a percentage that represents how prominent it is in the testimony.
         The percentages should add up to 100% across the top 5 topics.
@@ -294,14 +294,8 @@ def extract_key_topics(full_text):
 
     return topics
 
-# Updated extract_testimony_details
-def extract_testimony_details(file_path):
-    full_text = process_document(file_path)
-
-    # Use a maximum of 15000 characters to avoid token limits
-    analysis_text = full_text
-
-    # Writer details
+# Writer Information Extraction
+def extract_writer_information(full_text):
     writer_prompt_template = PromptTemplate(
         input_variables=["text"],
         template="""
@@ -329,9 +323,20 @@ def extract_testimony_details(file_path):
     )
 
     writer_chain = LLMChain(llm=google_llm, prompt=writer_prompt_template)
-    writer_result = writer_chain.run(text=analysis_text)
+    writer_result = writer_chain.run(text=full_text)
 
-    # People mentioned
+    # Parse the writer information
+    writer_data = {}
+    lines = writer_result.strip().split('\n')
+    for line in lines:
+        if ':' in line:
+            key, value = line.split(':', 1)
+            writer_data[key.strip()] = value.strip()
+
+    return writer_data
+
+# People Mentioned Extraction
+def extract_people_mentioned(full_text):
     people_prompt_template = PromptTemplate(
         input_variables=["text"],
         template="""
@@ -353,28 +358,11 @@ def extract_testimony_details(file_path):
     )
 
     people_chain = LLMChain(llm=openai_llm, prompt=people_prompt_template)
-    people_result = people_chain.run(text=analysis_text)
+    people_result = people_chain.run(text=full_text)
 
-    # Emotional, geographical, and topic analysis
-    emotions = analyze_emotions(full_text)
-    locations = extract_locations(full_text)
-    topics = extract_key_topics(full_text)
-
-    return writer_result, people_result, emotions, locations, topics
-
-# Parsing functions (unchanged)
-def parse_writer_info(writer_info):
-    lines = writer_info.strip().split('\n')
-    writer_data = {}
-    for line in lines:
-        if ':' in line:
-            key, value = line.split(':', 1)
-            writer_data[key.strip()] = value.strip()
-    return writer_data
-
-def parse_people_info(people_info):
+    # Parse the people information
     people_data = []
-    lines = people_info.strip().split('\n')
+    lines = people_result.strip().split('\n')
     for line in lines:
         if line.strip().startswith('-'):
             name_match = re.search(r'Name:\s*\[(.*?)\]|Name:\s*(.*?)(?:,|$)', line)
@@ -385,7 +373,21 @@ def parse_people_info(people_info):
                 role = next((g for g in role_match.groups() if g is not None), "Unspecified") if role_match else "Unspecified"
                 region = next((g for g in region_match.groups() if g is not None), "Unspecified") if region_match else "Unspecified"
                 people_data.append({"name": name.strip(), "role": role.strip(), "region": region.strip()})
+
     return people_data
+
+# Updated extract_testimony_details
+def extract_testimony_details(file_path):
+    full_text = process_document(file_path)
+
+    # Extract all analysis components
+    writer_data = extract_writer_information(full_text)
+    people_data = extract_people_mentioned(full_text)
+    emotions = analyze_emotions(full_text)
+    locations = extract_locations(full_text)
+    topics = extract_key_topics(full_text)
+
+    return writer_data, people_data, emotions, locations, topics
 
 # Updated analyze-testimony route
 @app.route('/api/analyze-testimony', methods=['POST'])
@@ -419,9 +421,7 @@ def analyze_testimony():
                 files_to_remove.append(file_path)
 
                 # Process and analyze the file
-                writer_info, people_info, emotions, locations, topics = extract_testimony_details(file_path)
-                writer_data = parse_writer_info(writer_info)
-                people_data = parse_people_info(people_info)
+                writer_data, people_data, emotions, locations, topics = extract_testimony_details(file_path)
 
                 analysis_result = {
                     "filename": filename,
