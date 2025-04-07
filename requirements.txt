@@ -9,4 +9,4 @@ google-generativeai
 langchain-google-genai
 langchain-community
 langchain-openai
-faiss-cpu
+docx2txt
