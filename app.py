@@ -134,21 +134,6 @@ def login():
         }), 200
     return jsonify({"error": "Invalid credentials", "success": False}), 401
 
-# Optional: Protected route example to verify JWT and user identity
-# @app.route('/api/protected', methods=['GET'])
-# @jwt_required()
-# def protected():
-#     current_user_email = get_jwt_identity()
-#     user = users.find_one({'email': current_user_email})
-#     if user:
-#         return jsonify({
-#             "message": "Access granted",
-#             "email": current_user_email,
-#             "role": user['userType'],
-#             "name": user['fullName']
-#         }), 200
-#     return jsonify({"error": "User not found"}), 404
-
 # Document processing
 def process_document(file_path):
     if file_path.endswith(".pdf"):
@@ -376,7 +361,7 @@ def extract_people_mentioned(full_text):
 
     return people_data
 
-# Updated extract_testimony_details
+# extract testimony details
 def extract_testimony_details(file_path):
     full_text = process_document(file_path)
 
@@ -389,7 +374,7 @@ def extract_testimony_details(file_path):
 
     return writer_data, people_data, emotions, locations, topics
 
-# Updated analyze-testimony route
+# analyze testimony route
 @app.route('/api/analyze-testimony', methods=['POST'])
 @jwt_required()
 def analyze_testimony():
@@ -464,7 +449,7 @@ def analyze_testimony():
                 pass
         return jsonify({"error": f"Error processing testimonies: {str(e)}"}), 500
 
-# New route to get museum testimonies list
+# Route to get museum testimonies list
 @app.route('/api/museum-testimonies', methods=['GET'])
 @jwt_required()
 def get_museum_testimonies():
@@ -485,7 +470,7 @@ def get_museum_testimonies():
     
     return jsonify({"testimonies": testimonies}), 200
 
-# New route to get specific testimony details
+# Route to get specific testimony details
 @app.route('/api/museum-testimony/<filename>', methods=['GET'])
 @jwt_required()
 def get_museum_testimony(filename):
@@ -505,7 +490,7 @@ def get_museum_testimony(filename):
         
     return jsonify({"testimony": testimony}), 200
 
-# New route to delete a specific testimony
+# Route to delete a specific testimony
 @app.route('/api/museum-testimony/<filename>', methods=['DELETE'])
 @jwt_required()
 def delete_museum_testimony(filename):
