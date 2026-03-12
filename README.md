@@ -97,8 +97,7 @@ Prerequisites:
 - Python 3.8+
 - MongoDB (local or remote)
 - API keys:
-  - OPENAI_API_KEY
-  - GOOGLE_API_KEY
+  - OPENROUTER_API_KEY
 
 Install:
 - git clone <your-repository-url>
@@ -114,8 +113,7 @@ Install:
 
 Create a .env file in project root:
 
-OPENAI_API_KEY=<your-openai-api-key>
-GOOGLE_API_KEY=<your-google-ai-api-key>
+OPENROUTER_API_KEY=<your-openrouter-api-key>
 MONGODB_URI=mongodb://localhost:27017/
 JWT_SECRET_KEY=<your-jwt-secret>
 MAX_CONTENT_LENGTH=16777216
@@ -320,7 +318,7 @@ Limits and safety:
   - Verify MONGODB_URI, DB availability, and credentials.
 
 - AI provider errors or slow responses
-  - Verify OPENAI_API_KEY and GOOGLE_API_KEY.
+  - Verify OPENROUTER_API_KEY.
   - Consider retry with backoff; check quota/limits.
 
 - Unicode or parsing issues with PDFs

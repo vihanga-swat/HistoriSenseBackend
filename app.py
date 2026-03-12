@@ -9,14 +9,11 @@ import secrets
 import os
 from werkzeug.utils import secure_filename
 from dotenv import load_dotenv
-from langchain_openai import ChatOpenAI
-from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_openai import OpenAIEmbeddings
+from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_community.vectorstores import FAISS
-from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.document_loaders import PyPDFLoader, Docx2txtLoader, TextLoader
-from langchain.prompts import PromptTemplate
-from langchain.chains import LLMChain
+from langchain_core.prompts import PromptTemplate
 from collections import Counter
 
 app = Flask(__name__)
@@ -46,21 +43,28 @@ os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
 # Load environment variables
 load_dotenv()
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 
-# Initialize Dual LLMs and Embeddings
+# Initialize LLMs and Embeddings via OpenRouter
+# Primary LLM for emotions and topics
 openai_llm = ChatOpenAI(
-    model_name="gpt-3.5-turbo",
+    model_name="openai/gpt-3.5-turbo",
     temperature=0.5,
-    openai_api_key=OPENAI_API_KEY
+    openai_api_key=OPENROUTER_API_KEY,
+    base_url="https://openrouter.ai/api/v1"
 )
-google_llm = ChatGoogleGenerativeAI(
-    model="gemini-2.0-flash",
-    google_api_key=GOOGLE_API_KEY,
-    temperature=0.5
+# Using Gemini 2.0 Flash via OpenRouter for geographical and writer info tasks
+google_llm = ChatOpenAI(
+    model_name="google/gemini-2.0-flash-001",
+    temperature=0.5,
+    openai_api_key=OPENROUTER_API_KEY,
+    base_url="https://openrouter.ai/api/v1"
 )
-embeddings = OpenAIEmbeddings(openai_api_key=OPENAI_API_KEY)
+embeddings = OpenAIEmbeddings(
+    model="openai/text-embedding-3-small", # generic embedding on OpenRouter
+    openai_api_key=OPENROUTER_API_KEY,
+    base_url="https://openrouter.ai/api/v1"
+)
 
 # Helper functions
 def validate_email(email):
@@ -176,8 +180,8 @@ def analyze_emotions(full_text):
         """
     )
 
-    emotion_chain = LLMChain(llm=openai_llm, prompt=emotion_prompt_template)
-    result = emotion_chain.run(text=analysis_text)
+    emotion_chain = emotion_prompt_template | openai_llm
+    result = emotion_chain.invoke({"text": analysis_text}).content
 
     # Parse the emotions
     emotions = {}
@@ -215,8 +219,8 @@ def extract_locations(full_text):
         """
     )
 
-    location_chain = LLMChain(llm=google_llm, prompt=location_prompt_template)
-    result = location_chain.run(text=analysis_text)
+    location_chain = location_prompt_template | google_llm
+    result = location_chain.invoke({"text": analysis_text}).content
 
     # Parse the locations
     locations = {}
@@ -260,8 +264,8 @@ def extract_key_topics(full_text):
         """
     )
 
-    topic_chain = LLMChain(llm=openai_llm, prompt=topic_prompt_template)
-    result = topic_chain.run(text=analysis_text)
+    topic_chain = topic_prompt_template | openai_llm
+    result = topic_chain.invoke({"text": analysis_text}).content
 
     # Parse the topics
     topics = {}
@@ -307,8 +311,8 @@ def extract_writer_information(full_text):
         """
     )
 
-    writer_chain = LLMChain(llm=google_llm, prompt=writer_prompt_template)
-    writer_result = writer_chain.run(text=full_text)
+    writer_chain = writer_prompt_template | google_llm
+    writer_result = writer_chain.invoke({"text": full_text}).content
 
     # Parse the writer information
     writer_data = {}
@@ -342,8 +346,8 @@ def extract_people_mentioned(full_text):
         """
     )
 
-    people_chain = LLMChain(llm=openai_llm, prompt=people_prompt_template)
-    people_result = people_chain.run(text=full_text)
+    people_chain = people_prompt_template | openai_llm
+    people_result = people_chain.invoke({"text": full_text}).content
 
     # Parse the people information
     people_data = []
