@@ -20,8 +20,12 @@ from collections import Counter
 load_dotenv()
 
 app = Flask(__name__)
-# In production, set ALLOWED_ORIGINS in .env (e.g. https://historisense.pages.dev)
-allowed_origins = os.getenv("ALLOWED_ORIGINS", "http://localhost:5173").split(",")
+
+# Production configuration
+# In production, set ALLOWED_ORIGINS in .env (e.g. https://historisense.vercel.app)
+raw_origins = os.getenv("ALLOWED_ORIGINS", "http://localhost:5173")
+allowed_origins = [origin.strip() for origin in raw_origins.split(",") if origin.strip()]
+
 CORS(app, supports_credentials=True, origins=allowed_origins)
 
 # Use a stable secret key from environment variables for production
@@ -522,4 +526,6 @@ def delete_museum_testimony(filename):
     return jsonify({"message": "Testimony deleted successfully"}), 200
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    debug_mode = os.getenv("DEBUG", "False").lower() == "true"
+    port = int(os.getenv("PORT", 5000))
+    app.run(host='0.0.0.0', port=port, debug=debug_mode)
