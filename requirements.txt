@@ -11,3 +11,5 @@ langchain-google-genai
 langchain-community
 langchain-openai
 docx2txt
+gunicorn
+python-dotenv

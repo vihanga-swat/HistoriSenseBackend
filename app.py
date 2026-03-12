@@ -16,18 +16,26 @@ from langchain_community.document_loaders import PyPDFLoader, Docx2txtLoader, Te
 from langchain_core.prompts import PromptTemplate
 from collections import Counter
 
+# Load environment variables
+load_dotenv()
+
 app = Flask(__name__)
-CORS(app, supports_credentials=True)  # Enable CORS with credentials support
-app.secret_key = secrets.token_urlsafe(32)  # For session management
+# In production, set ALLOWED_ORIGINS in .env (e.g. https://historisense.pages.dev)
+allowed_origins = os.getenv("ALLOWED_ORIGINS", "http://localhost:5173").split(",")
+CORS(app, supports_credentials=True, origins=allowed_origins)
+
+# Use a stable secret key from environment variables for production
+app.secret_key = os.getenv("SECRET_KEY", secrets.token_urlsafe(32))
 
 # Setup the Flask-JWT-Extended extension
-app.config['JWT_SECRET_KEY'] = secrets.token_urlsafe(64)  # Generate a secure secret key
-app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(hours=1)  # Tokens expire after 1 hour
+app.config['JWT_SECRET_KEY'] = os.getenv("JWT_SECRET_KEY", secrets.token_urlsafe(64))
+app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(hours=1)
 jwt = JWTManager(app)
 
 # MongoDB Connection
-client = MongoClient('localhost', 27017)
-db = client['HistoriSense']
+mongodb_uri = os.getenv("MONGODB_URI", "mongodb://localhost:27017/")
+client = MongoClient(mongodb_uri)
+db = client[os.getenv("DATABASE_NAME", "HistoriSense")]
 users = db.users
 museum_testimonies = db.museum_testimonies
 
@@ -41,8 +49,6 @@ MAX_MUSEUM_UPLOADS = 5
 # Create uploads directory if it doesn't exist
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-# Load environment variables
-load_dotenv()
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 
 # Initialize LLMs and Embeddings via OpenRouter
