@@ -23,7 +23,7 @@ app = Flask(__name__)
 
 # Production configuration
 # In production, set ALLOWED_ORIGINS in .env (e.g. https://historisense.vercel.app)
-raw_origins = os.getenv("ALLOWED_ORIGINS", "http://localhost:5173")
+raw_origins = os.getenv("ALLOWED_ORIGINS", "http://localhost:5173,https://historisensefrontend.pages.dev")
 allowed_origins = [origin.strip() for origin in raw_origins.split(",") if origin.strip()]
 
 CORS(app, supports_credentials=True, origins=allowed_origins)
