@@ -16,30 +16,21 @@ from langchain_community.document_loaders import PyPDFLoader, Docx2txtLoader, Te
 from langchain_core.prompts import PromptTemplate
 from collections import Counter
 
-# Load environment variables
-load_dotenv()
-
 app = Flask(__name__)
-
-# Production configuration
-# In production, set ALLOWED_ORIGINS in .env (e.g. https://historisense.vercel.app)
-raw_origins = os.getenv("ALLOWED_ORIGINS", "http://localhost:5173,https://historisensefrontend.pages.dev")
+raw_origins = os.getenv("ALLOWED_ORIGINS", "http://localhost:5173")
 allowed_origins = [origin.strip() for origin in raw_origins.split(",") if origin.strip()]
 
 CORS(app, supports_credentials=True, origins=allowed_origins)
-
-# Use a stable secret key from environment variables for production
-app.secret_key = os.getenv("SECRET_KEY", secrets.token_urlsafe(32))
+app.secret_key = secrets.token_urlsafe(32)  # For session management
 
 # Setup the Flask-JWT-Extended extension
-app.config['JWT_SECRET_KEY'] = os.getenv("JWT_SECRET_KEY", secrets.token_urlsafe(64))
-app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(hours=1)
+app.config['JWT_SECRET_KEY'] = secrets.token_urlsafe(64)  # Generate a secure secret key
+app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(hours=1)  # Tokens expire after 1 hour
 jwt = JWTManager(app)
 
 # MongoDB Connection
-mongodb_uri = os.getenv("MONGODB_URI", "mongodb://localhost:27017/")
-client = MongoClient(mongodb_uri)
-db = client[os.getenv("DATABASE_NAME", "HistoriSense")]
+client = MongoClient('localhost', 27017)
+db = client['HistoriSense']
 users = db.users
 museum_testimonies = db.museum_testimonies
 
@@ -53,6 +44,8 @@ MAX_MUSEUM_UPLOADS = 5
 # Create uploads directory if it doesn't exist
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
+# Load environment variables
+load_dotenv()
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 
 # Initialize LLMs and Embeddings via OpenRouter
@@ -526,6 +519,4 @@ def delete_museum_testimony(filename):
     return jsonify({"message": "Testimony deleted successfully"}), 200
 
 if __name__ == '__main__':
-    debug_mode = os.getenv("DEBUG", "False").lower() == "true"
-    port = int(os.getenv("PORT", 5000))
-    app.run(host='0.0.0.0', port=port, debug=debug_mode)
+    app.run(debug=True)
